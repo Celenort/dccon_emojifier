@@ -67,7 +67,7 @@ async def help(ctx):
         name='사용 예시 2', value=f'{COMMAND_PREFIX}콘 "나나히라 라인", {COMMAND_PREFIX}콘 카구야는인사받고싶어, ... (디시콘 패키지 이름만 입력 시 디시콘 목록 출력)', inline=False)
     embed.add_field(
         name='명령어', value=f'{COMMAND_PREFIX}콘, {COMMAND_PREFIX}도움, {COMMAND_PREFIX}대하여, {COMMAND_PREFIX}초대링크', inline=False)
-    embed.set_footer(text='그코좆망겜')
+    embed.set_footer(text='디시콘봇_현재 수정중')
     await ctx.channel.send(embed=embed)
 
 
@@ -217,6 +217,142 @@ async def send_dccon(ctx, *args):
                 await ctx.channel.send('인자로 패키지 이름만 넘길 경우 사용 가능한 디시콘 목록이 출력됩니다.')
     #
     ############################################################################################################
+
+
+@bot.command(name='등록')
+async def send_dccon(ctx, *args):
+    log(from_text(ctx), 'registering emoji to server')
+
+    if not args or len(args) > 2:
+        log(from_text(ctx), 'empty args')
+        await ctx.channel.send(f'사용법을 참고해주세요. ({COMMAND_PREFIX}도움)')
+        await ctx.channel.send('디시콘 패키지명이나 디시콘명에 공백이 있을 경우 큰따옴표로 묶어야 합니다.')
+        return
+
+    list_print_mode = False
+    package_name = args[0]
+    idx = 'list_print_mode'
+    if len(args) == 2:
+        idx = args[1]
+    else:
+        list_print_mode = True
+
+    log(from_text(ctx),
+        f'interpreted: {package_name}, {idx}. list_print_mode: {list_print_mode}')
+
+    ############################################################################################################
+    # respect https://github.com/gw1021/dccon-downloader/blob/master/python/app.py#L7:L18
+
+    # TODO: 변수명 간단히
+
+    s = requests.Session()
+
+    package_search_req = s.get(DCCON_SEARCH_URL + package_name)
+    package_search_html = BeautifulSoup(package_search_req.text, 'html.parser')
+    package_search_list = package_search_html.select(
+        '#right_cont_wrap > div > div.dccon_listbox > ul > li')
+
+    try:
+        # pick first dccon package (bs4 obj) from search list
+        target_package = package_search_list[0]
+    except IndexError as e:  # maybe no search result w/ IndexError?
+        log(from_text(ctx), 'error! (maybe no search result) : ' + str(e))
+        await ctx.channel.send(f'"{package_name}" 디시콘 패키지 정보를 찾을 수 없습니다.')
+    else:
+        # get dccon number of target dccon package
+        target_package_num = target_package.get('package_idx')
+        log(from_text(ctx), 'processing with: ' + target_package_num)
+
+        # for i in package_search_req.cookies:
+        #     print(i.name, i.value)
+
+        package_detail_req = s.post(DCCON_DETAILS_URL,
+                                    # content-type: application/x-www-form-urlencoded; charset=UTF-8
+                                    cookies={'ci_c': package_search_req.cookies['ci_c'],
+                                             'PHPSESSID': package_search_req.cookies['PHPSESSID']},
+                                    headers={'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                                             'Referer': DCCON_SEARCH_URL + str(package_name.encode('utf-8')),
+                                             'Origin': DCCON_HOME_URL,
+                                             'X-Requested-With': 'XMLHttpRequest'},
+                                    data={'ci_t': package_search_req.cookies['ci_c'],
+                                          'package_idx': target_package_num,
+                                          'code': ''})
+
+        # 에러 핸들링 여기서 해야함
+
+        package_detail_json = package_detail_req.json()
+
+        '''
+            info /  'package_idx'
+                    'seller_no'
+                    'seller_id'
+                    'title'
+                    'category'
+                    'path'
+                    'description'
+                    'price'
+                    'period'
+                    'icon_cnt'
+                    'state'
+                    'open'
+                    'sale_count'
+                    'reg_date'
+                    'seller_name'
+                    'code'
+                    'seller_type'
+                    'mandoo'
+                    'main_img_path'
+                    'list_img_path'
+                    'reg_date_short'
+                    
+            detail /  () /  'idx'
+                            'package_idx'
+                            'title'
+                            'sort'
+                            'ext'
+                            'path'
+        '''
+
+        # 검색 결과로 바꿔치기
+        package_name = package_detail_json['info']['title']
+
+        if list_print_mode:
+            available_dccon_list = []
+            for dccon in package_detail_json['detail']:
+                available_dccon_list.append(dccon['title'])
+
+            await ctx.channel.send(f'"{package_name}"에서 사용 가능한 디시콘 : ' + ', '.join(available_dccon_list).rstrip(', '))
+        else:
+            succeed = False
+            for dccon in package_detail_json['detail']:
+                if dccon['title'] == idx:
+                    dccon_img = "http://dcimg5.dcinside.com/dccon.php?no=" + \
+                        dccon['path']
+                    dccon_img_request = s.get(
+                        dccon_img, headers={'Referer': DCCON_HOME_URL})
+
+                    buffer = BytesIO(dccon_img_request.content)
+                    filename = package_name + '_' + \
+                        dccon['title'] + '.' + dccon['ext']
+
+                    await ctx.channel.send(file=File(buffer, filename))
+                    succeed = True
+                    for guild in bot.guilds:
+                        await guild.create_custom_emoji(name=filename, image=buffer.read())
+                    await ctx.channel.send('등록 완료!')
+
+
+            if succeed:
+                log(from_text(ctx), 'succeed')
+            else:
+                log(from_text(ctx), 'not found')
+
+                await ctx.channel.send(f'"{package_name}" 디시콘 패키지에서 "{idx}" 디시콘을 찾지 못했습니다.')
+                await ctx.channel.send('인자로 패키지 이름만 넘길 경우 사용 가능한 디시콘 목록이 출력됩니다.')
+    #
+    ############################################################################################################
+
+
 
 
 @bot.event
